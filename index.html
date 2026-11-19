@@ -291,7 +291,7 @@ select.input-field option { background:#1c1f27; }
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, push, onValue, remove, set, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, push, onValue, remove, set, get, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBsVGdSg8Grz4U1hPJCxYx5qErT2051hCE",
@@ -316,6 +316,35 @@ const TRIP_LBL = {ida:'Ida',volta:'Volta',ida_volta:'Ida e Volta'};
 let selectedTrip = null;
 let admFilter = 'all';
 let allStudents = [];
+
+// ===== RESET AUTOMÁTICO ÀS 23:00 (horário de Brasília) =====
+// Cada "ciclo" começa às 23:00. A chave do ciclo é a data do último 23:00 que já passou.
+function currentResetCycle() {
+  const br = new Date(Date.now() - 3*60*60*1000); // Brasília = UTC-3
+  if (br.getUTCHours() < 23) br.setUTCDate(br.getUTCDate() - 1);
+  return br.toISOString().slice(0,10);
+}
+
+let resetRunning = false;
+async function autoResetCheck() {
+  if (resetRunning) return;
+  resetRunning = true;
+  try {
+    const cycle = currentResetCycle();
+    let previous = null;
+    // A transação garante que só UM aparelho faça o reset, mesmo com vários acessando juntos
+    const res = await runTransaction(ref(db,'config/lastReset'), current => {
+      previous = current;
+      if (current === cycle) return; // já resetou neste ciclo: não faz nada
+      return cycle;
+    });
+    // previous === null = primeira vez que o recurso roda: só marca o ciclo, sem apagar a lista
+    if (res.committed && previous !== null) {
+      await remove(ref(db,'students'));
+    }
+  } catch(e) { console.error('Erro no reset automático:', e); }
+  resetRunning = false;
+}
 
 // REALTIME LISTENER - alunos
 onValue(ref(db,'students'), snap => {
@@ -385,6 +414,7 @@ window.removePresence = async function() {
 }
 
 window.submitPresence = async function() {
+  await autoResetCheck();
   const snap = await get(ref(db,'config'));
   const dl = snap.exists() && snap.val().deadline ? snap.val().deadline : '';
   if(dl) {
@@ -502,6 +532,10 @@ window.toast = function(msg,type=''){
   t.textContent=msg; t.className='toast on '+type;
   clearTimeout(toastT); toastT=setTimeout(()=>{t.className='toast';},2800);
 }
+
+autoResetCheck();
+setInterval(autoResetCheck, 60000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) autoResetCheck(); });
 </script>
 </body>
 </html>
